@@ -24,7 +24,6 @@ import android.os.StatFs;
 import android.os.BatteryManager;
 import android.os.Debug;
 import android.os.Process;
-import android.os.SystemClock;
 import android.provider.Settings;
 import android.view.inputmethod.InputMethodManager;
 import android.view.inputmethod.InputMethodInfo;
@@ -63,6 +62,7 @@ import java.net.NetworkInterface;
 import java.math.BigInteger;
 import java.util.Locale;
 import java.util.Map;
+import android.util.Log;
 
 import javax.annotation.Nonnull;
 
@@ -70,6 +70,10 @@ import static android.content.Context.ACTIVITY_SERVICE;
 import static android.os.BatteryManager.BATTERY_STATUS_CHARGING;
 import static android.os.BatteryManager.BATTERY_STATUS_FULL;
 import static android.provider.Settings.Secure.getString;
+
+import java.io.BufferedReader;
+import java.io.FileReader;
+import java.io.IOException;
 
 @ReactModule(name = RNDeviceModule.NAME)
 public class RNDeviceModule extends ReactContextBaseJavaModule {
@@ -123,12 +127,7 @@ public class RNDeviceModule extends ReactContextBaseJavaModule {
         Boolean powerSaveState = powerState.getBoolean(LOW_POWER_MODE);
 
         if(!mLastBatteryState.equalsIgnoreCase(batteryState) || mLastPowerSaveState != powerSaveState) {
-          WritableMap updatedPowerState = Arguments.createMap();
-          updatedPowerState.putString(BATTERY_STATE, batteryState);
-          updatedPowerState.putDouble(BATTERY_LEVEL, batteryLevel);
-          updatedPowerState.putBoolean(LOW_POWER_MODE, powerSaveState);
-          
-          sendEvent(getReactApplicationContext(), "RNDeviceInfo_powerStateDidChange", updatedPowerState);
+          sendEvent(getReactApplicationContext(), "RNDeviceInfo_powerStateDidChange", batteryState);
           mLastBatteryState = batteryState;
           mLastPowerSaveState = powerSaveState;
         }
@@ -194,17 +193,8 @@ public class RNDeviceModule extends ReactContextBaseJavaModule {
     registerReceiver(getReactApplicationContext(), headphoneBluetoothConnectionReceiver, filter);
   }
 
-  // the upstream method was removed in react-native 0.74
-  // this stub remains for backwards compatibility so that react-native < 0.74
-  // (which will still call onCatalystInstanceDestroy) will continue to function
+  @Override
   public void onCatalystInstanceDestroy() {
-    invalidate();
-  }
-
-  // This should have an `@Override` tag, but the method does not exist until
-  // react-native >= 0.74, which would cause linting errors across versions
-  // once minimum supported react-native here is 0.74+, add the tag
-  public void invalidate() {
     getReactApplicationContext().unregisterReceiver(receiver);
     getReactApplicationContext().unregisterReceiver(headphoneConnectionReceiver);
     getReactApplicationContext().unregisterReceiver(headphoneWiredConnectionReceiver);
@@ -370,49 +360,104 @@ public class RNDeviceModule extends ReactContextBaseJavaModule {
   }
   @ReactMethod
   public void isCameraPresent(Promise p) { p.resolve(isCameraPresentSync()); }
+  
+  
+   public static String getMACAddressFromEth0() {
+    String macAddress = "";
+    try (BufferedReader br = new BufferedReader(new FileReader("/sys/class/net/eth0/address"))) {
+        macAddress = br.readLine();
+    } catch (IOException e) {
+        // Consider logging the exception for debugging purposes
+        e.printStackTrace();
+    }
+    return macAddress;
+}
 
   @SuppressLint("HardwareIds")
   @ReactMethod(isBlockingSynchronousMethod = true)
-  public String getMacAddressSync() {
-    WifiInfo wifiInfo = getWifiInfo();
+
+  // public String getMacAddressSync() {
+  //   WifiInfo wifiInfo = getWifiInfo();
+  //   String macAddress = "";
+  //   if (wifiInfo != null) {
+  //     macAddress = wifiInfo.getMacAddress();
+  //   }
+  //  // Log.d( "MAC address from wifi: ", macAddress);
+  //   String permission = "android.permission.INTERNET";
+  //   int res = getReactApplicationContext().checkCallingOrSelfPermission(permission);
+
+  //   if (res == PackageManager.PERMISSION_GRANTED) {
+  //     try {
+  //       List<NetworkInterface> all = Collections.list(NetworkInterface.getNetworkInterfaces());
+  //       for (NetworkInterface nif : all) {
+  //         if (!nif.getName().equalsIgnoreCase("eth0")) continue;
+
+  //         byte[] macBytes = nif.getHardwareAddress();
+  //         if (macBytes == null) {
+  //           macAddress = "";
+  //         } else {
+
+  //           StringBuilder res1 = new StringBuilder();
+  //           for (byte b : macBytes) {
+  //             res1.append(String.format("%02X:",b));
+  //           }
+
+  //           if (res1.length() > 0) {
+  //             res1.deleteCharAt(res1.length() - 1);
+  //           }
+
+  //           macAddress = res1.toString();
+  //         }
+  //       }
+  //     } catch (Exception ex) {
+  //       // do nothing
+  //     }
+  //   }
+  //   if (macAddress == null || macAddress.isEmpty() || macAddress.equals("02:00:00:00:00:00")) {
+  //       macAddress = getMACAddressFromEth0();
+  //   }
+  //   return macAddress;
+  // }
+
+public String getMacAddressSync() {
     String macAddress = "";
-    if (wifiInfo != null) {
-      macAddress = wifiInfo.getMacAddress();
+    
+    // Try to get MAC address from ethernet first
+    macAddress = getMACAddressFromEth0();
+    if (!macAddress.isEmpty()) {
+        return macAddress;
     }
-
-    String permission = "android.permission.INTERNET";
-    int res = getReactApplicationContext().checkCallingOrSelfPermission(permission);
-
-    if (res == PackageManager.PERMISSION_GRANTED) {
-      try {
+    
+    // If ethernet MAC is not available, try to get from WiFi or mobile data interfaces
+    try {
         List<NetworkInterface> all = Collections.list(NetworkInterface.getNetworkInterfaces());
         for (NetworkInterface nif : all) {
-          if (!nif.getName().equalsIgnoreCase("wlan0")) continue;
-
-          byte[] macBytes = nif.getHardwareAddress();
-          if (macBytes == null) {
-            macAddress = "";
-          } else {
-
-            StringBuilder res1 = new StringBuilder();
-            for (byte b : macBytes) {
-              res1.append(String.format("%02X:",b));
+            if (nif.getName().equalsIgnoreCase("wlan0") || nif.getName().toLowerCase().startsWith("rmnet") || nif.getName().toLowerCase().startsWith("ccmni")) {
+                byte[] macBytes = nif.getHardwareAddress();
+                if (macBytes != null && macBytes.length > 0) {
+                    StringBuilder res1 = new StringBuilder();
+                    for (byte b : macBytes) {
+                        res1.append(String.format("%02X:", b));
+                    }
+                    if (res1.length() > 0) {
+                        res1.deleteCharAt(res1.length() - 1);
+                    }
+                    return res1.toString();
+                }
             }
-
-            if (res1.length() > 0) {
-              res1.deleteCharAt(res1.length() - 1);
-            }
-
-            macAddress = res1.toString();
-          }
         }
-      } catch (Exception ex) {
-        // do nothing
-      }
+    } catch (Exception ex) {
+        // Handle exception
     }
-
-    return macAddress;
-  }
+    
+    // If MAC address is not available, try to get UUDD (Android ID)
+    String androidId = Settings.Secure.getString(getReactApplicationContext().getContentResolver(), Settings.Secure.ANDROID_ID);
+    if (androidId != null && !androidId.equals("9774d56d682e549c")) {
+        return androidId;
+    }
+    
+    return "unknown";
+}
 
   @ReactMethod
   public void getMacAddress(Promise p) { p.resolve(getMacAddressSync()); }
@@ -769,22 +814,6 @@ public class RNDeviceModule extends ReactContextBaseJavaModule {
   }
   @ReactMethod
   public void getLastUpdateTime(Promise p) { p.resolve(getLastUpdateTimeSync()); }
-
-  @ReactMethod(isBlockingSynchronousMethod = true)
-  public double getStartupTimeSync() {
-    // Get time in milliseconds since unix epoch
-    long currentTime = System.currentTimeMillis();
-    // Get the time when the process started in milliseconds since system boot
-    long processStartTime = Process.getStartUptimeMillis();
-    // Get the milliseconds since system boot time
-    long currentUptime = SystemClock.uptimeMillis();
-    // Calculate the process startup time in milliseconds since unix epoch
-    long startupTime = currentTime - currentUptime + processStartTime;
-    return BigInteger.valueOf(startupTime).doubleValue();
-  }
-
-  @ReactMethod
-  public void getStartupTime(Promise p) { p.resolve(getStartupTimeSync()); }
 
   @ReactMethod(isBlockingSynchronousMethod = true)
   public String getDeviceNameSync() {
